@@ -1,11 +1,5 @@
 # QSDiff
 
-QSDiff is a query-space diffusion model for probabilistic forecasting of
-irregular multivariate time series. It combines query representation,
-scale-aware continuous noise, and consistency-regularized denoising. The
-repository contains the QSDiff implementation and the APN, HyperIMTS, GraFITi,
-tPatchGNN, and Warpformer models required by the associated experiments.
-
 ## 1. Requirements
 
 Given a Python environment, install the dependencies with:
@@ -14,16 +8,7 @@ Given a Python environment, install the dependencies with:
 pip install -r requirements.txt
 ```
 
-This project has been fully tested with Python 3.11.13 and PyTorch
-2.6.0+cu124. The CUDA 12.4 PyTorch wheel is specified in
-`requirements.txt`. A CUDA-capable GPU is recommended for training and
-sampling.
-
 ## 2. Data Preparation
-
-QSDiff is evaluated on four widely used irregular time-series datasets:
-PhysioNet 2012, MIMIC-III, HumanActivity, and USHCN. Their preparation differs
-slightly because MIMIC-III requires credentialed access.
 
 ### 2.1 Public datasets
 
@@ -75,83 +60,17 @@ processed Parquet files under `~/.tsdm/datasets/`.
 
 ## 3. Execute
 
-Training and testing are performed by the same command: after training and
-validation finish, the best checkpoint is loaded and evaluated automatically.
-The default scripts run seeds 2024–2028. Use `SEEDS="2024"` for a single run
-and `GPU_ID=1` to select a GPU.
+Training consists of prior pre-training followed by QSDiff training and
+testing. Taking MIMIC-III as an example:
 
-### 3.1 Pre-train the HyperIMTS prior
-
-The selected MIMIC-III configuration uses a frozen HyperIMTS prior. Pre-train
-it once:
+### 3.1 Pre-training
 
 ```bash
 bash scripts/pretrain.sh MIMIC_III
 ```
 
-The script records the resulting checkpoint under
-`storage/priors/MIMIC_III/HyperIMTS.latest`. No setting name or checkpoint path
-needs to be copied manually.
-
-### 3.2 Train and test QSDiff on MIMIC-III
+### 3.2 Complete training and testing
 
 ```bash
 bash scripts/MIMIC_III.sh
 ```
-
-The script automatically loads the checkpoint produced in Step 3.1. A custom
-compatible checkpoint can be supplied through
-`QSDIFF_PRIOR_CHECKPOINT=/path/to/run`.
-
-### 3.3 Train and test QSDiff on USHCN
-
-```bash
-bash scripts/USHCN.sh
-```
-
-The selected USHCN configuration is prior-free and enables the optional
-Low-Rank Query Residual. It therefore does not require the pre-training step.
-
-For example, a one-seed run on GPU 2 is:
-
-```bash
-GPU_ID=2 SEEDS="2024" bash scripts/USHCN.sh
-```
-
-## 4. Reproduced operating points
-
-The released scripts encode the selected five-seed configurations:
-
-| Dataset | Selected QSDiff configuration | Test MSE |
-| --- | --- | ---: |
-| MIMIC-III | Scale-aware noise + learned global scale mixture + HyperIMTS prior | 0.3863 ± 0.0011 |
-| USHCN | Scale-aware noise + Low-Rank Query Residual, without prior | 0.1711 ± 0.0062 |
-
-Exact values can vary slightly with hardware and library versions. Checkpoints,
-generated configurations, logs, and datasets are written below `storage/` and
-are excluded from version control.
-
-## 5. Repository layout
-
-```text
-QSDiff/
-├── data/                # dataset wrappers and preprocessing
-├── exp/                 # training, validation, and test loop
-├── layers/              # retained baseline-specific layers
-├── loss_fns/            # training objective
-├── models/              # QSDiff and retained query-based models
-├── scripts/
-│   ├── pretrain.sh      # HyperIMTS prior pre-training
-│   ├── MIMIC_III.sh     # selected MIMIC-III configuration
-│   └── USHCN.sh         # selected USHCN configuration
-├── utils/
-├── main.py
-└── requirements.txt
-```
-
-## Acknowledgements
-
-The unified experiment and data-loading infrastructure is adapted from
-PyOmniTS. The retained baseline implementations preserve their source
-attribution comments. Please cite the corresponding QSDiff paper and baseline
-papers when using this repository.
