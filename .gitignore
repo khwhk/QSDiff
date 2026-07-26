@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+
+# Runtime artifacts
+storage/
+configs/
+logs/
+wandb/
+*.log
+*.npy
+*.npz
+*.pkl
+*.pth
+*.pt
+*.bin
+*.parquet
+
+# Local environment
+.env
