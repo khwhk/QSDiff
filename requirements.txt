@@ -1,3 +1,5 @@
+# Python 3.11.13
+
 torch==2.6.0+cu124
 accelerate>=1.0,<2
 coloredlogs>=15.0
