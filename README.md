@@ -74,3 +74,27 @@ bash scripts/pretrain.sh MIMIC_III
 ```bash
 bash scripts/MIMIC_III.sh
 ```
+
+USHCN can be reproduced directly:
+
+```bash
+bash scripts/USHCN.sh
+```
+
+Each dataset script uses one unified configuration for point and probabilistic
+forecasting. By default it trains seeds 2024--2028, evaluates the same five
+checkpoints, fits the probabilistic calibration on validation predictions
+only, and writes `reproduction_metrics.md` beside the checkpoints. Calibration
+changes only the forecast ensemble; the point forecast used for MSE is kept
+unchanged.
+
+The expected five-seed operating points are:
+
+| Dataset | MSE | CRPS |
+|---|---:|---:|
+| MIMIC-III | 0.386x | 0.278x |
+| USHCN | 0.1711 | 0.1797 |
+
+The public dataset scripts expose the query diffusion, structured-noise, prior,
+and consistency choices. Routine capacity, optimization, checkpoint-selection,
+and validation-calibration settings are centralized in the internal runner.

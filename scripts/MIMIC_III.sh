@@ -18,9 +18,8 @@ else
     exit 1
 fi
 
-# The exposed parameters below correspond to QSDiff's query-space diffusion,
-# scale-aware continuous noise, optional residual, prior guidance, and
-# consistency objective. Routine optimizer/capacity settings live in _common.sh.
+# Only method-defining parameters are exposed here. Capacity, optimization,
+# checkpoint-selection, and validation-calibration settings live in _common.sh.
 QSDIFF_ARGS=(
     --qsdiff_target_mode query
     --qsdiff_diffusion_steps 100
@@ -40,27 +39,8 @@ QSDIFF_ARGS=(
     --qsdiff_prior_center 1
     --qsdiff_prior_condition 1
     --qsdiff_freeze_prior 1
-    --qsdiff_prior_residual_mode gated_residual
-    --qsdiff_prior_anchor_weight 0.03
-    --qsdiff_prior_anchor_gap_scale 0.10
-    --qsdiff_mean_loss_weight 0.30
-    --qsdiff_low_noise_step_prob 0.50
-    --qsdiff_low_noise_step_max 20
     --qsdiff_consistency_weight 0.0
     --qsdiff_consistency_mode x0
 )
 
-SEEDS="${SEEDS:-2024 2025 2026 2027 2028}"
-for seed in $SEEDS; do
-    echo "Training and testing QSDiff on MIMIC-III (seed ${seed})..."
-    run_model \
-        --is_training 1 \
-        --model_name QSDiff \
-        --model_id "QSDiff_MIMIC_III_best_seed${seed}" \
-        --checkpoints storage/results \
-        --itr 1 \
-        --seed_base "$seed" \
-        "${DATASET_ARGS[@]}" \
-        "${QSDIFF_ENGINEERING_ARGS[@]}" \
-        "${QSDIFF_ARGS[@]}"
-done
+run_qsdiff_reproduction MIMIC_III QSDiff_MIMIC_III_reproduction 72 3
