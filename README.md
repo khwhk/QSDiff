@@ -75,7 +75,7 @@ bash scripts/pretrain.sh MIMIC_III
 bash scripts/MIMIC_III.sh
 ```
 
-USHCN can be trained and tested directly:
+To train and test without pre-training:
 
 ```bash
 bash scripts/USHCN.sh
