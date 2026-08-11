@@ -80,3 +80,5 @@ To train and test without pre-training:
 ```bash
 bash scripts/USHCN.sh
 ```
+
+All scripts will be made publicly available upon acceptance of the paper.
