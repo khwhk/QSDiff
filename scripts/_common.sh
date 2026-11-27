@@ -1,306 +1,186 @@
 #!/usr/bin/env bash
-
-# Shared dataset and optimization settings. Public experiment scripts keep the
-# QSDiff method parameters visible while centralizing routine engineering
-# settings here.
-
+# Shared training and evaluation steps for the four forecasting scripts.
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT_DIR"
 PYTHON_BIN="${PYTHON_BIN:-python}"
-GPU_ID="${GPU_ID:-0}"
-
-run_model() {
-    if [[ "${DRY_RUN:-0}" == "1" ]]; then
-        printf 'CUDA_VISIBLE_DEVICES=%q %q %q' "$GPU_ID" "$PYTHON_BIN" "$ROOT_DIR/main.py"
-        printf ' %q' "$@"
-        printf '\n'
-        return 0
-    fi
-
-    (
-        cd "$ROOT_DIR"
-        CUDA_VISIBLE_DEVICES="$GPU_ID" "$PYTHON_BIN" main.py "$@"
-    )
-}
+export CUDA_VISIBLE_DEVICES="${GPU_ID:-${CUDA_VISIBLE_DEVICES-0}}"
 
 set_dataset_args() {
-    local dataset="$1"
-    case "$dataset" in
-        MIMIC_III)
-            DATASET_ARGS=(
-                --dataset_name MIMIC_III
-                --dataset_id MIMIC_III
-                --dataset_root_path storage/datasets/MIMIC_III
-                --collate_fn collate_fn
-                --features M
-                --seq_len 72
-                --pred_len 3
-                --enc_in 96
-                --dec_in 96
-                --c_out 96
-            )
-            ;;
-        USHCN)
-            DATASET_ARGS=(
-                --dataset_name USHCN
-                --dataset_id USHCN
-                --dataset_root_path storage/datasets/USHCN
-                --collate_fn collate_fn
-                --features M
-                --seq_len 150
-                --pred_len 3
-                --enc_in 5
-                --dec_in 5
-                --c_out 5
-            )
-            ;;
-        *)
-            echo "Unsupported dataset: $dataset (choose MIMIC_III or USHCN)." >&2
-            return 2
-            ;;
+    DATASET="$1"
+    case "$DATASET" in
+        HumanActivity) SEQ_LEN=3000; PRED_LEN=300; CHANNELS=12 ;;
+        MIMIC_III)     SEQ_LEN=72;   PRED_LEN=3;   CHANNELS=96 ;;
+        P12)           SEQ_LEN=36;   PRED_LEN=3;   CHANNELS=36 ;;
+        USHCN)         SEQ_LEN=150;  PRED_LEN=3;   CHANNELS=5 ;;
+        *) echo "Unknown dataset: $DATASET" >&2; return 2 ;;
     esac
-}
-
-set_hyperimts_args() {
-    local dataset="$1"
-    case "$dataset" in
-        MIMIC_III)
-            HYPERIMTS_ARGS=(
-                --d_model 256
-                --d_ff 2048
-                --n_layers 2
-                --n_heads 4
-                --dropout 0.05
-                --batch_size 32
-                --learning_rate 0.001
-                --num_workers 10
-            )
-            ;;
-        USHCN)
-            HYPERIMTS_ARGS=(
-                --d_model 256
-                --d_ff 2048
-                --n_layers 1
-                --n_heads 1
-                --dropout 0.05
-                --batch_size 16
-                --learning_rate 0.001
-                --num_workers 10
-            )
-            ;;
-    esac
-
-    HYPERIMTS_ARGS+=(
-        --loss MSE
-        --lr_scheduler DelayedStepDecayLR
-        --train_epochs 300
-        --patience 10
-        --val_interval 1
+    DATASET_ARGS=(
+        --dataset_name "$DATASET" --dataset_id "$DATASET"
+        --dataset_root_path "${DATASET_ROOT:-storage/datasets}/$DATASET"
+        --collate_fn collate_fn --features M --seq_len "$SEQ_LEN" --pred_len "$PRED_LEN"
+        --enc_in "$CHANNELS" --dec_in "$CHANNELS" --c_out "$CHANNELS"
     )
-}
-
-set_qsdiff_engineering_args() {
-    local dataset="$1"
-    case "$dataset" in
-        MIMIC_III)
-            QSDIFF_ENGINEERING_ARGS=(
-                --d_model 96
-                --d_ff 384
-                --n_layers 4
-                --n_heads 4
-                --dropout 0.1
-                --batch_size 16
-                --learning_rate 0.0007
-                --num_workers 4
-                --qsdiff_sample_val_interval 2
-                --qsdiff_sample_val_num_samples 5
-                --qsdiff_sample_val_sampling_steps 10
-                --qsdiff_sample_val_max_batches 24
-                --qsdiff_sample_val_seed 2024
-                --qsdiff_prior_residual_mode gated_residual
-                --qsdiff_prior_anchor_weight 0.03
-                --qsdiff_prior_anchor_gap_scale 0.10
-                --qsdiff_mean_loss_weight 0.30
-                --qsdiff_low_noise_step_prob 0.50
-                --qsdiff_low_noise_step_max 20
-            )
-            ;;
-        USHCN)
-            QSDIFF_ENGINEERING_ARGS=(
-                --d_model 32
-                --d_ff 128
-                --n_layers 3
-                --n_heads 4
-                --dropout 0.1
-                --batch_size 32
-                --learning_rate 0.001
-                --num_workers 10
-                --qsdiff_sample_val_interval 0
-            )
-            ;;
-    esac
-
-    QSDIFF_ENGINEERING_ARGS+=(
-        --loss MSE
-        --lr_scheduler DelayedStepDecayLR
-        --train_epochs 200
-        --patience 10
-        --val_interval 1
-        --save_arrays 1
-        --qsdiff_crps_scale original
-    )
-}
-
-resolve_seed_protocol() {
-    local -a seeds
-    local index
-
+    SEED_BASE="${SEED_BASE:-2024}"
+    ITR="${ITR:-5}"
     if [[ -n "${SEEDS:-}" ]]; then
+        local -a seeds
+        local index
         read -r -a seeds <<< "$SEEDS"
-        [[ "${#seeds[@]}" -gt 0 ]] || {
-            echo "SEEDS must contain at least one integer seed." >&2
-            return 2
-        }
+        if (( ${#seeds[@]} == 0 )); then echo "SEEDS is empty." >&2; return 2; fi
         SEED_BASE="${seeds[0]}"
         ITR="${#seeds[@]}"
-        for ((index = 0; index < ITR; index++)); do
-            if [[ "${seeds[$index]}" != "$((SEED_BASE + index))" ]]; then
-                echo "SEEDS must be contiguous because one experiment root stores iter0..iterN." >&2
-                return 2
-            fi
+        for ((index=0; index<ITR; index++)); do
+            [[ "${seeds[index]}" =~ ^(0|[1-9][0-9]*)$ && "${seeds[index]}" == "$((SEED_BASE + index))" ]] || {
+                echo "SEEDS must be consecutive nonnegative integers." >&2; return 2;
+            }
         done
-    else
-        SEED_BASE="${SEED_BASE:-2024}"
-        ITR="${ITR:-5}"
     fi
-}
-
-latest_experiment_root() {
-    local dataset="$1"
-    local model_id="$2"
-    local seq_len="$3"
-    local pred_len="$4"
-    local base="$ROOT_DIR/storage/results/$dataset/$dataset/QSDiff/$model_id/${seq_len}_${pred_len}"
-    local latest
-
-    latest="$(find "$base" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort | tail -n 1)"
-    [[ -n "$latest" ]] || {
-        echo "Cannot locate the completed experiment under $base." >&2
-        return 1
+    [[ "$ITR" =~ ^[1-9][0-9]*$ && "$SEED_BASE" =~ ^(0|[1-9][0-9]*)$ ]] || {
+        echo "ITR must be positive and SEED_BASE must be a nonnegative integer." >&2; return 2;
     }
-    printf '%s/%s\n' "$base" "$latest"
 }
 
-run_qsdiff_reproduction() {
-    local dataset="$1"
-    local model_id="$2"
-    local seq_len="$3"
-    local pred_len="$4"
-    local experiment_root
-    local iteration
-    local seed
-    local seed_model_id
-    local seed_root
-    local -a seed_roots
+run_command() {
+    if [[ "${DRY_RUN:-0}" == 1 ]]; then
+        printf '%q ' "$@"; printf '\n'
+    else
+        "$@"
+    fi
+}
 
-    resolve_seed_protocol
-    if [[ "$dataset" == "MIMIC_III" ]]; then
-        # The selected MIMIC result used one fresh process per seed. Keeping
-        # that organization also preserves each test ensemble's RNG protocol.
-        for ((iteration = 0; iteration < ITR; iteration++)); do
-            seed="$((SEED_BASE + iteration))"
-            seed_model_id="${model_id}_seed${seed}"
-            echo "Training QSDiff on ${dataset}, seed ${seed}..."
-            run_model \
-                --is_training 1 \
-                --model_name QSDiff \
-                --model_id "$seed_model_id" \
-                --checkpoints storage/results \
-                --itr 1 \
-                --seed_base "$seed" \
-                "${DATASET_ARGS[@]}" \
-                "${QSDIFF_ENGINEERING_ARGS[@]}" \
-                "${QSDIFF_ARGS[@]}"
+new_run() {
+    local parent="$ROOT_DIR/storage/reproduction/$DATASET/$1"
+    if [[ "${DRY_RUN:-0}" == 1 ]]; then
+        printf '%s/run-preview\n' "$parent"
+    else
+        mkdir -p "$parent"
+        mktemp -d "$parent/run-$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX"
+    fi
+}
 
-            if [[ "${DRY_RUN:-0}" == "1" ]]; then
-                continue
-            fi
-            seed_root="$(
-                latest_experiment_root \
-                    "$dataset" "$seed_model_id" "$seq_len" "$pred_len"
-            )"
-            seed_roots+=("$seed_root/iter0")
-            echo "Saving validation forecasts for ${dataset}, seed ${seed}..."
-            run_model \
-                --is_training 0 \
-                --model_name QSDiff \
-                --model_id "$seed_model_id" \
-                --checkpoints storage/results \
-                --checkpoints_test "$seed_root/iter0" \
-                --itr 1 \
-                --seed_base "$seed" \
-                --test_split val \
-                "${DATASET_ARGS[@]}" \
-                "${QSDIFF_ENGINEERING_ARGS[@]}" \
-                "${QSDIFF_ARGS[@]}"
+# main.py creates one timestamp under this invocation's private checkpoint directory.
+trained_group() {
+    local parent="$1/$DATASET/$DATASET/$2/$3/${SEQ_LEN}_${PRED_LEN}"
+    if [[ "${DRY_RUN:-0}" == 1 ]]; then printf '%s/timestamp\n' "$parent"; return; fi
+    local -a groups=("$parent"/*)
+    [[ "${#groups[@]}" == 1 && -f "${groups[0]}/iter0/pytorch_model.bin" ]] || {
+        echo "Missing completed training run under $parent" >&2; return 1;
+    }
+    printf '%s\n' "${groups[0]}"
+}
+
+prior_protocol() {
+    PRIOR_BASE="$SEED_BASE"
+    PRIOR_COUNT="$ITR"
+    case "$DATASET" in
+        HumanActivity) PRIOR_ARGS=(--d_model 128 --n_heads 1 --n_layers 3) ;;
+        MIMIC_III)
+            PRIOR_ARGS=(--d_model 256 --n_heads 4 --n_layers 2)
+            PRIOR_COUNT=1
+            PRIOR_BASE="${PRIOR_SEED:-2024}"
+            ;;
+        P12) PRIOR_ARGS=(--d_model 256 --n_heads 8 --n_layers 1) ;;
+        *) echo "$DATASET runs directly without a prior." >&2; return 2 ;;
+    esac
+    PRIOR_POINTER="$ROOT_DIR/storage/priors/$DATASET/HyperIMTS_${PRIOR_BASE}_${PRIOR_COUNT}.latest"
+}
+
+train_prior() {
+    local output pointer_tmp index
+    output="$(new_run prior)"
+    run_command "$PYTHON_BIN" main.py --is_training 1 --model_name HyperIMTS --model_id HyperIMTS \
+        --checkpoints "$output" --seed_base "$PRIOR_BASE" --itr "$PRIOR_COUNT" --skip_test 1 \
+        "${DATASET_ARGS[@]}" "${PRIOR_ARGS[@]}" --d_ff 2048 --dropout 0.05 \
+        --batch_size 32 --learning_rate 0.001 --num_workers 10 --loss MSE \
+        --lr_scheduler DelayedStepDecayLR --train_epochs 300 --patience 10 --val_interval 1
+    PRIOR_ROOT="$(trained_group "$output" HyperIMTS HyperIMTS)"
+    if [[ "${DRY_RUN:-0}" != 1 ]]; then
+        for ((index=0; index<PRIOR_COUNT; index++)); do
+            [[ -f "$PRIOR_ROOT/iter$index/pytorch_model.bin" ]] || {
+                echo "Missing prior checkpoint at $PRIOR_ROOT/iter$index" >&2; return 1;
+            }
         done
-        if [[ "${DRY_RUN:-0}" == "1" ]]; then
-            return 0
-        fi
+        mkdir -p "$(dirname "$PRIOR_POINTER")"
+        pointer_tmp="$(mktemp "${PRIOR_POINTER}.XXXXXX")"
+        printf '%s\n' "${PRIOR_ROOT#"$ROOT_DIR"/}" > "$pointer_tmp"
+        mv -f "$pointer_tmp" "$PRIOR_POINTER"
+    fi
+}
 
-        # Present independently trained seeds to the reporting code through a
-        # single auditable iter0..iterN manifest.
-        experiment_root="$ROOT_DIR/storage/results/$dataset/$dataset/QSDiff/${model_id}_manifest/${seq_len}_${pred_len}/$(date -u +%Y_%m%d_%H%M%S)_$$"
-        mkdir -p "$experiment_root"
-        for ((iteration = 0; iteration < ITR; iteration++)); do
-            ln -s "${seed_roots[$iteration]}" "$experiment_root/iter${iteration}"
+resolve_prior() {
+    prior_protocol
+    if [[ -n "${QSDIFF_PRIOR_CHECKPOINT:-}" ]]; then
+        PRIOR_ROOT="$QSDIFF_PRIOR_CHECKPOINT"
+    elif [[ -s "$PRIOR_POINTER" ]]; then
+        read -r PRIOR_ROOT < "$PRIOR_POINTER"
+    else
+        train_prior
+    fi
+    if [[ "$DATASET" == MIMIC_III && -d "$PRIOR_ROOT/iter0" ]]; then
+        PRIOR_ROOT="$PRIOR_ROOT/iter0"
+    fi
+    if [[ "${DRY_RUN:-0}" != 1 && ! -e "$PRIOR_ROOT" ]]; then
+        echo "Missing HyperIMTS checkpoint: $PRIOR_ROOT" >&2; return 1
+    fi
+    PRIOR_FLAGS=(--qsdiff_use_prior 1 --qsdiff_prior_model HyperIMTS
+        --qsdiff_prior_checkpoint "$PRIOR_ROOT" --qsdiff_freeze_prior 1
+        --qsdiff_prior_center 1 --qsdiff_prior_condition 1)
+}
+
+run_main() {
+    local output trained index seed split checkpoint source
+    local -a splits=(val test) common eval_prior sources=()
+    PRIOR_FLAGS=(--qsdiff_use_prior 0)
+    if [[ "$DATASET" != USHCN ]]; then resolve_prior; fi
+    if [[ "$DATASET" == MIMIC_III ]]; then splits=(test); fi
+    output="$(new_run forecast)"
+    common=(--model_name QSDiff --model_id "QSDiff_${DATASET}" "${DATASET_ARGS[@]}"
+        --loss MSE --lr_scheduler DelayedStepDecayLR --train_epochs 200 --patience 10 --val_interval 1
+        --dropout 0.1 --n_heads 4 --qsdiff_target_mode query --qsdiff_diffusion_steps 100
+        --qsdiff_sampling_steps 20 --qsdiff_num_samples 25 --qsdiff_crps_scale model
+        "${QSDIFF_ARGS[@]}")
+    if [[ "$DATASET" == MIMIC_III && -z "${QSDIFF_CHECKPOINT:-}" ]]; then
+        # The learned-mixture checkpoints used independent processes and the same frozen prior.
+        for ((index=0; index<ITR; index++)); do
+            seed=$((SEED_BASE + index))
+            run_command "$PYTHON_BIN" main.py "${common[@]}" "${PRIOR_FLAGS[@]}" \
+                --checkpoints "$output/seed$seed" --is_training 1 --itr 1 --seed_base "$seed" --skip_test 1
+            trained="$(trained_group "$output/seed$seed" QSDiff "QSDiff_${DATASET}")"
+            sources+=("$trained/iter0")
         done
     else
-        # The selected USHCN result used the framework's native contiguous
-        # five-iteration protocol.
-        echo "Training QSDiff on ${dataset}: ${ITR} seed(s), starting from ${SEED_BASE}..."
-        run_model \
-            --is_training 1 \
-            --model_name QSDiff \
-            --model_id "$model_id" \
-            --checkpoints storage/results \
-            --itr "$ITR" \
-            --seed_base "$SEED_BASE" \
-            "${DATASET_ARGS[@]}" \
-            "${QSDIFF_ENGINEERING_ARGS[@]}" \
-            "${QSDIFF_ARGS[@]}"
-
-        if [[ "${DRY_RUN:-0}" == "1" ]]; then
-            return 0
+        trained="${QSDIFF_CHECKPOINT:-}"
+        if [[ -z "$trained" ]]; then
+            run_command "$PYTHON_BIN" main.py "${common[@]}" "${PRIOR_FLAGS[@]}" \
+                --checkpoints "$output" --is_training 1 --itr "$ITR" --seed_base "$SEED_BASE" --skip_test 1
+            trained="$(trained_group "$output" QSDiff "QSDiff_${DATASET}")"
         fi
-        experiment_root="$(
-            latest_experiment_root \
-                "$dataset" "$model_id" "$seq_len" "$pred_len"
-        )"
-
-        for ((iteration = 0; iteration < ITR; iteration++)); do
-            seed="$((SEED_BASE + iteration))"
-            echo "Saving validation forecasts for ${dataset}, seed ${seed}..."
-            run_model \
-                --is_training 0 \
-                --model_name QSDiff \
-                --model_id "$model_id" \
-                --checkpoints storage/results \
-                --checkpoints_test "$experiment_root/iter${iteration}" \
-                --itr 1 \
-                --seed_base "$seed" \
-                --test_split val \
-                "${DATASET_ARGS[@]}" \
-                "${QSDIFF_ENGINEERING_ARGS[@]}" \
-                "${QSDIFF_ARGS[@]}"
-        done
+        for ((index=0; index<ITR; index++)); do sources+=("$trained/iter$index"); done
     fi
-
-    "$PYTHON_BIN" "$ROOT_DIR/scripts/_calibrate.py" \
-        --dataset "$dataset" \
-        --experiment-root "$experiment_root" \
-        --expected-seeds "$ITR" \
-        --output-prefix "$experiment_root/reproduction_metrics" \
-        --save-calibrated
-
-    echo "Reproduction report: $experiment_root/reproduction_metrics.md"
+    for ((index=0; index<ITR; index++)); do
+        seed=$((SEED_BASE + index))
+        checkpoint="$output/forecasts/iter$index"
+        if [[ "${DRY_RUN:-0}" != 1 ]]; then
+            source="${sources[index]}"
+            [[ -f "$source/pytorch_model.bin" && -f "$source/configs.yaml" ]] || {
+                echo "Missing checkpoint or configs.yaml at $source" >&2; return 1;
+            }
+            mkdir -p "$checkpoint"
+            ln -s "$(realpath "$source/pytorch_model.bin")" "$checkpoint/pytorch_model.bin"
+            ln -s "$(realpath "$source/configs.yaml")" "$checkpoint/configs.yaml"
+        fi
+        eval_prior=("${PRIOR_FLAGS[@]}")
+        if [[ "$DATASET" != USHCN && -d "$PRIOR_ROOT/iter$index" ]]; then
+            eval_prior+=(--qsdiff_prior_checkpoint "$PRIOR_ROOT/iter$index")
+        fi
+        for split in "${splits[@]}"; do
+            run_command "$PYTHON_BIN" main.py "${common[@]}" "${eval_prior[@]}" "${EVAL_ARGS[@]}" \
+                --is_training 0 --itr 1 --seed_base "$seed" --num_workers 2 \
+                --checkpoints_test "$checkpoint" --test_split "$split" --save_arrays 1
+        done
+    done
+    run_command "$PYTHON_BIN" scripts/_calibrate.py --dataset "$DATASET" \
+        --experiment-root "$output/forecasts" --expected-seeds "$ITR" \
+        --output-prefix "$output/reproduction_metrics" --save-calibrated
+    echo "Results: $output/reproduction_metrics.md"
 }
